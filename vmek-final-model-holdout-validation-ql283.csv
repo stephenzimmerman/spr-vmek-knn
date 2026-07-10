@@ -1,0 +1,4 @@
+heldout_site_apl,n_train,n_test,n_test_samples,kernel_accuracy,kernel_balanced_accuracy,mean_bucket_mae_pp,IPSDP_mae_pp,IPSSP_mae_pp,IPLSP_mae_pp,IPLDP_mae_pp
+Elk Farm SPR,473997,248442,210,0.6887,0.5935,17.2331,14.1134,30.9948,21.5034,2.3209
+Quality Lab283,486064,236375,209,0.7011,0.5821,14.6758,11.8515,27.3312,18.5917,0.9289
+USSL APL1,484817,237622,213,0.6978,0.5784,14.9901,11.8606,26.7524,18.8819,2.4653

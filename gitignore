@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local outputs
+vmek_outputs/
+outputs/
+results/
+*.log
+
+# Large/proprietary raw data - keep out of git by default
+raw_data/
+data/raw/
+data/processed/
+*.csv
+*.xlsx
+*.xlsm
+*.xls
+
+# Allow selected validation/reference files if intentionally added
+!validation/*.csv
+!reference/*.xlsx
+
+# Model files can be large; commit only if private repo and approved
+# Remove the next line if the repo should include the final model package.
+# *.joblib
+
+# Local machine registry updated from Excel
+machine_registry.json

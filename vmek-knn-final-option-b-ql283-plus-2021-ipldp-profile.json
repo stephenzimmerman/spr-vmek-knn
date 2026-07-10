@@ -1,0 +1,125 @@
+{
+  "model_name": "SPR VMEK KNN Final OptionB QL283",
+  "model_version": "v3.1-optionB-QL283-plus-2021-IPLDP",
+  "algorithm": "KNeighborsClassifier",
+  "k": 5,
+  "metric": "euclidean",
+  "scaler": "StandardScaler",
+  "features": [
+    "Area_mm2_corrected",
+    "Length_mm_corrected",
+    "Width_mm_corrected",
+    "ContLength_mm_equiv_corrected"
+  ],
+  "bucket_order": [
+    "IPSDP",
+    "IPSSP",
+    "IPLSP",
+    "IPLDP"
+  ],
+  "bucket_rules": {
+    "IPSDP": "screen_size <= 15",
+    "IPSSP": "16 <= screen_size <= 19",
+    "IPLSP": "20 <= screen_size <= 23",
+    "IPLDP": "screen_size >= 24"
+  },
+  "preprocessing": {
+    "correction_option": "B",
+    "area": "Area_mm2_corrected = Area_mm2_uncorrected * area_corr",
+    "linear_traits": "Length/Width/ContLength corrected by sqrt(area_corr)",
+    "mx4_contlength": "sqrt(4*pi*Area_mm2_corrected/Roundness)"
+  },
+  "machine_registry": {
+    "Elk Farm SPR": {
+      "machine_name": "Elk Farm",
+      "site_apl": "Elk Farm SPR",
+      "vmek_style": "MX4_mm",
+      "px_mm": 0.332,
+      "area_corr": 1.08911,
+      "input_units": "mm",
+      "bias_flag": "\u26a0 Review"
+    },
+    "Quality Lab283": {
+      "machine_name": "QL2020283",
+      "site_apl": "Quality Lab283",
+      "vmek_style": "Metrix_1_6_px",
+      "px_mm": 0.332,
+      "area_corr": 0.93513,
+      "input_units": "px",
+      "bias_flag": "\u2014 Monitor"
+    },
+    "USSL APL1": {
+      "machine_name": "APLUSSL01AL17",
+      "site_apl": "USSL APL1",
+      "vmek_style": "Metrix_1_6_px",
+      "px_mm": 0.332,
+      "area_corr": 0.91864,
+      "input_units": "px",
+      "bias_flag": "\u26a0 Review"
+    }
+  },
+  "training_data": {
+    "training_csv": "outputs/vmek_final_training_table_optionB_QL283_plus_2021_IPLDP.csv",
+    "n_rows": 722439,
+    "source_files": [
+      "vmek_consolidated_elk_farm.csv",
+      "vmek-consolidated-quality-lab.csv",
+      "vmek-consolidated-slater-r-d.xlsx",
+      "vmek-training.csv screen>=24 only"
+    ],
+    "rows_by_site_apl": {
+      "Elk Farm SPR": 248442,
+      "Quality Lab283": 236375,
+      "USSL APL1": 237622
+    },
+    "rows_by_target_bucket": {
+      "IPSDP": 72790,
+      "IPSSP": 425806,
+      "IPLSP": 223048,
+      "IPLDP": 795
+    },
+    "older_2021_ipldp_rows_added": 375,
+    "quality_lab_correction_used": "Quality Lab283 / QL2020283 / area_corr 0.93513"
+  },
+  "validation": [
+    {
+      "heldout_site_apl": "Elk Farm SPR",
+      "n_train": 473997,
+      "n_test": 248442,
+      "n_test_samples": 210,
+      "kernel_accuracy": 0.6887,
+      "kernel_balanced_accuracy": 0.5935,
+      "mean_bucket_mae_pp": 17.2331,
+      "IPSDP_mae_pp": 14.1134,
+      "IPSSP_mae_pp": 30.9948,
+      "IPLSP_mae_pp": 21.5034,
+      "IPLDP_mae_pp": 2.3209
+    },
+    {
+      "heldout_site_apl": "Quality Lab283",
+      "n_train": 486064,
+      "n_test": 236375,
+      "n_test_samples": 209,
+      "kernel_accuracy": 0.7011,
+      "kernel_balanced_accuracy": 0.5821,
+      "mean_bucket_mae_pp": 14.6758,
+      "IPSDP_mae_pp": 11.8515,
+      "IPSSP_mae_pp": 27.3312,
+      "IPLSP_mae_pp": 18.5917,
+      "IPLDP_mae_pp": 0.9289
+    },
+    {
+      "heldout_site_apl": "USSL APL1",
+      "n_train": 484817,
+      "n_test": 237622,
+      "n_test_samples": 213,
+      "kernel_accuracy": 0.6978,
+      "kernel_balanced_accuracy": 0.5784,
+      "mean_bucket_mae_pp": 14.9901,
+      "IPSDP_mae_pp": 11.8606,
+      "IPSSP_mae_pp": 26.7524,
+      "IPLSP_mae_pp": 18.8819,
+      "IPLDP_mae_pp": 2.4653
+    }
+  ]
+}
