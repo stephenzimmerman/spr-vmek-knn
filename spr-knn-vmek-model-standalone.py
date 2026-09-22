@@ -54,6 +54,7 @@ SUPPORTED_SUFFIXES = {".csv", ".txt", ".tsv", ".xlsx", ".xlsm", ".xls"}
 LOCAL_REGISTRY_FILE = "machine_registry.json"
 DEFAULT_MODEL_NAME = "vmek_knn_final_optionB_plus_2021_IPLDP.joblib"
 DEFAULT_OUTPUT_NAME = "vmek_spr_traits_output.csv"
+DEFAULT_STANDARDIZATION_FILE = r"C:\Users\s1064440\OneDrive - Syngenta\Vmek info\VMEK_Plastic_Kernel_Standardization.xlsx"
 
 # Hide noisy sklearn feature-name warnings in local GUI runs.
 warnings.filterwarnings("ignore", message=".*valid feature names.*", category=UserWarning)
@@ -90,7 +91,7 @@ def norm_header(x: Any) -> str:
     return re.sub(r"\s+", " ", str(x).replace("\n", " ")).strip()
 
 
-def update_registry_from_excel(excel_path: str | Path, registry_path: str | Path = LOCAL_REGISTRY_FILE) -> Dict[str, Dict[str, Any]]:
+def load_registry_from_excel(excel_path: str | Path) -> Dict[str, Dict[str, Any]]:
     from openpyxl import load_workbook
     wb = load_workbook(excel_path, data_only=True)
     if "Standardization Table" not in wb.sheetnames:
@@ -126,6 +127,12 @@ def update_registry_from_excel(excel_path: str | Path, registry_path: str | Path
             "area_corr": float(corr),
             "bias_flag": ws.cell(r, headers.get("Bias Flag", 0)).value if "Bias Flag" in headers else None,
         }
+    validate_registry(registry)
+    return registry
+
+
+def update_registry_from_excel(excel_path: str | Path, registry_path: str | Path = LOCAL_REGISTRY_FILE) -> Dict[str, Dict[str, Any]]:
+    registry = load_registry_from_excel(excel_path)
     save_registry(registry, registry_path)
     return registry
 
@@ -303,6 +310,7 @@ class App(tk.Tk):
         self.title("SPR VMEK KNN Processor")
         self.geometry("980x640")
         self.registry_path = tk.StringVar(value=LOCAL_REGISTRY_FILE)
+        self.standardization_path = tk.StringVar(value=DEFAULT_STANDARDIZATION_FILE)
         here = Path(__file__).resolve().parent
         self.model_path = tk.StringVar(value=str(here / DEFAULT_MODEL_NAME))
         self.input_folder = tk.StringVar(value="")
@@ -334,9 +342,12 @@ class App(tk.Tk):
         self.combo.grid(row=0, column=1, sticky="w", padx=8)
         self.combo.bind("<<ComboboxSelected>>", lambda e: self.show_machine())
         ttk.Button(mf, text="Refresh", command=self.refresh_machines).grid(row=0, column=2, padx=5)
-        ttk.Button(mf, text="Update from Excel...", command=self.update_excel).grid(row=0, column=3, padx=5)
+        ttk.Label(mf, text="Standardization workbook").grid(row=1, column=0, sticky="w")
+        ttk.Entry(mf, textvariable=self.standardization_path).grid(row=1, column=1, sticky="ew", padx=8, pady=4)
+        ttk.Button(mf, text="Browse...", command=self.pick_standardization).grid(row=1, column=2, pady=4)
+        ttk.Button(mf, text="Load workbook", command=self.refresh_machines).grid(row=1, column=3, padx=5)
         self.machine_info = ttk.Label(mf, text="")
-        self.machine_info.grid(row=1, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        self.machine_info.grid(row=2, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
         io = ttk.LabelFrame(root, text="2. Folder batch input", padding=10)
         io.grid(row=2, column=0, sticky="ew", pady=6)
@@ -384,7 +395,14 @@ class App(tk.Tk):
 
     def refresh_machines(self):
         try:
-            self.registry = load_registry(self.registry_path.get())
+            workbook = Path(self.standardization_path.get().strip())
+            if workbook.is_file():
+                self.registry = load_registry_from_excel(workbook)
+                save_registry(self.registry, self.registry_path.get())
+                self.write(f"Loaded standardization workbook: {workbook}")
+            else:
+                self.registry = load_registry(self.registry_path.get())
+                self.write("Standardization workbook not found; loaded saved registry.")
             sites = sorted(self.registry)
             self.combo["values"] = sites
             if self.site_apl.get() not in sites:
@@ -408,6 +426,12 @@ class App(tk.Tk):
             self.refresh_machines()
         except Exception as exc:
             messagebox.showerror("Update failed", str(exc))
+
+    def pick_standardization(self):
+        path = filedialog.askopenfilename(title="Select standardization workbook", filetypes=[("Excel", "*.xlsx *.xlsm *.xls"), ("All", "*.*")])
+        if path:
+            self.standardization_path.set(path)
+            self.refresh_machines()
 
     def pick_dir(self, var):
         path = filedialog.askdirectory()
