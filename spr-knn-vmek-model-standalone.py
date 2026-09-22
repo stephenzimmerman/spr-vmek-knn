@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-SPR VMEK KNN Processor — Standalone GUI
-No separate vmek_spr_processor.py file is required.
+SPR VMEK KNN Processor — Standalone GUI v2
 
-Keep this file in the same folder as the final model, or browse to it in the GUI:
-  vmek_knn_final_optionB_plus_2021_IPLDP.joblib
+Changes in v2:
+- Folder batch mode creates ONE output CSV only.
+- No individual per-input output files are created.
+- Output includes SampleName from the input file name.
+- Output includes Barcode extracted as 11 characters beginning with LC or DR.
+- Suppresses sklearn feature-name warnings during prediction.
 
 Required packages:
-  pandas numpy scikit-learn joblib openpyxl
+  pip install pandas numpy scikit-learn joblib openpyxl
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import subprocess
 import sys
 import threading
 import traceback
+import warnings
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -49,6 +53,11 @@ BUCKET_ORDER = ["IPSDP", "IPSSP", "IPLSP", "IPLDP"]
 SUPPORTED_SUFFIXES = {".csv", ".txt", ".tsv", ".xlsx", ".xlsm", ".xls"}
 LOCAL_REGISTRY_FILE = "machine_registry.json"
 DEFAULT_MODEL_NAME = "vmek_knn_final_optionB_plus_2021_IPLDP.joblib"
+DEFAULT_OUTPUT_NAME = "vmek_spr_traits_output.csv"
+
+# Hide noisy sklearn feature-name warnings in local GUI runs.
+warnings.filterwarnings("ignore", message=".*valid feature names.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*feature names.*", category=UserWarning)
 
 
 class VmekError(Exception):
@@ -67,10 +76,7 @@ def validate_registry(registry: Dict[str, Dict[str, Any]]) -> None:
 
 def load_registry(path: str | Path = LOCAL_REGISTRY_FILE) -> Dict[str, Dict[str, Any]]:
     p = Path(path)
-    if p.exists():
-        registry = json.loads(p.read_text(encoding="utf-8"))
-    else:
-        registry = json.loads(json.dumps(DEFAULT_MACHINE_REGISTRY))
+    registry = json.loads(p.read_text(encoding="utf-8")) if p.exists() else json.loads(json.dumps(DEFAULT_MACHINE_REGISTRY))
     validate_registry(registry)
     return registry
 
@@ -124,6 +130,17 @@ def update_registry_from_excel(excel_path: str | Path, registry_path: str | Path
     return registry
 
 
+def extract_barcode_from_filename(path: str | Path) -> str:
+    """Extract 11-char barcode starting with LC or DR from input file name/stem."""
+    stem = Path(path).stem.upper()
+    match = re.search(r"(?:LC|DR)[A-Z0-9]{9}", stem)
+    return match.group(0) if match else ""
+
+
+def sample_name_from_filename(path: str | Path) -> str:
+    return Path(path).stem
+
+
 def read_vmek_file(path: str | Path) -> pd.DataFrame:
     path = Path(path)
     if path.suffix.lower() in {".xlsx", ".xlsm", ".xls"}:
@@ -140,13 +157,6 @@ def detect_schema(df: pd.DataFrame) -> str:
     raise VmekError("Could not detect schema. Need Area/Length/Width/ContLength or Area/Length/Width/Roundness.")
 
 
-def sample_column(df: pd.DataFrame) -> str | None:
-    for c in ["SampleName", "Sample", "Sample Name", "Sample #"]:
-        if c in df.columns:
-            return c
-    return None
-
-
 def preprocess_option_b(df: pd.DataFrame, site_apl: str, registry: Dict[str, Dict[str, Any]], legacy_filter: bool = True) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     if site_apl not in registry:
         raise VmekError(f"Site/APL not found in registry: {site_apl}")
@@ -158,11 +168,8 @@ def preprocess_option_b(df: pd.DataFrame, site_apl: str, registry: Dict[str, Dic
     area_corr = float(rec["area_corr"])
     linear_corr = math.sqrt(area_corr)
 
-    scol = sample_column(raw)
-    raw["SampleName"] = raw[scol].astype(str) if scol else "Sample"
     if "Id" not in raw.columns:
         raw["Id"] = np.arange(1, len(raw) + 1)
-
     for c in ["Area", "Length", "Width", "ContLength", "Roundness"]:
         if c in raw.columns:
             raw[c] = pd.to_numeric(raw[c], errors="coerce")
@@ -192,10 +199,6 @@ def preprocess_option_b(df: pd.DataFrame, site_apl: str, registry: Dict[str, Dic
         valid["Width_mm_corrected"] = valid["Width"] * linear_corr
         valid["ContLength_mm_equiv_corrected"] = np.sqrt((4 * math.pi * valid["Area_mm2_corrected"]) / valid["Roundness"])
 
-    valid["site_apl"] = site_apl
-    valid["machine_name"] = rec.get("machine_name")
-    valid["schema_detected"] = schema
-
     stats = {
         "total_raw": int(total_raw),
         "valid_kernels": int(len(valid)),
@@ -216,104 +219,99 @@ def load_model(path: str | Path):
     return pkg, {}
 
 
-def predict_file(input_path: str | Path, site_apl: str, model_path: str | Path, output_dir: str | Path, registry: Dict[str, Dict[str, Any]], detail: bool = False, legacy_filter: bool = True) -> Dict[str, Path]:
-    raw = read_vmek_file(input_path)
-    kernels, stats = preprocess_option_b(raw, site_apl, registry, legacy_filter)
-    if kernels.empty:
-        raise VmekError("No valid kernels remained after preprocessing.")
-    model, meta = load_model(model_path)
-    features = meta.get("features", FEATURES)
-    kernels["predicted_bucket"] = model.predict(kernels[features])
-
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    stem = Path(input_path).stem
-
-    counts = pd.crosstab(kernels["SampleName"], kernels["predicted_bucket"]).reindex(columns=BUCKET_ORDER, fill_value=0)
-    pct = counts.div(counts.sum(axis=1).replace(0, np.nan), axis=0) * 100
-    summary = pct.reset_index()
-    summary.insert(1, "Site_APL", site_apl)
-    summary.insert(2, "Machine_Name", registry[site_apl].get("machine_name"))
-    summary.insert(3, "schema_detected", stats["schema_detected"])
-    summary.insert(4, "iSCLCN", counts.sum(axis=1).values.astype(int))
-    summary.insert(5, "total_kernels_raw_file", stats["total_raw"])
-    summary.insert(6, "kernels_removed_file", stats["kernels_removed"])
-    for b in BUCKET_ORDER:
-        if b not in summary.columns:
-            summary[b] = 0.0
-    summary[BUCKET_ORDER] = summary[BUCKET_ORDER].round(3)
-    summary = summary[["SampleName", "Site_APL", "Machine_Name", "schema_detected", "iSCLCN", "total_kernels_raw_file", "kernels_removed_file", *BUCKET_ORDER]]
-
-    summary_path = output_dir / f"{stem}_spr_traits.csv"
-    stats_path = output_dir / f"{stem}_processing_stats.json"
-    summary.to_csv(summary_path, index=False)
-    stats_path.write_text(json.dumps(stats, indent=2), encoding="utf-8")
-    paths = {"summary": summary_path, "stats": stats_path}
-
-    if detail:
-        detail_cols = ["SampleName", "Id", "site_apl", "machine_name", "schema_detected", "predicted_bucket", *features, "Area", "Length", "Width"]
-        for extra in ["ContLength", "Roundness"]:
-            if extra in kernels.columns:
-                detail_cols.append(extra)
-        detail_path = output_dir / f"{stem}_kernel_predictions.csv"
-        kernels[[c for c in detail_cols if c in kernels.columns]].to_csv(detail_path, index=False)
-        paths["detail"] = detail_path
-    return paths
+def summarize_one_file(input_path: str | Path, site_apl: str, model, metadata: Dict[str, Any], registry: Dict[str, Dict[str, Any]], legacy_filter: bool = True) -> Dict[str, Any]:
+    sample_name = sample_name_from_filename(input_path)
+    barcode = extract_barcode_from_filename(input_path)
+    base = {
+        "SampleName": sample_name,
+        "Barcode": barcode,
+        "InputFile": Path(input_path).name,
+        "Site_APL": site_apl,
+        "Machine_Name": registry.get(site_apl, {}).get("machine_name", ""),
+        "schema_detected": "",
+        "iSCLCN": 0,
+        "total_kernels_raw_file": 0,
+        "kernels_removed_file": 0,
+        "IPSDP": np.nan,
+        "IPSSP": np.nan,
+        "IPLSP": np.nan,
+        "IPLDP": np.nan,
+        "Processing_Status": "failed",
+        "Error_Message": "",
+    }
+    try:
+        raw = read_vmek_file(input_path)
+        kernels, stats = preprocess_option_b(raw, site_apl, registry, legacy_filter)
+        if kernels.empty:
+            raise VmekError("No valid kernels remained after preprocessing.")
+        features = metadata.get("features", FEATURES)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            preds = model.predict(kernels[features])
+        counts = pd.Series(preds).value_counts().reindex(BUCKET_ORDER, fill_value=0)
+        total = int(counts.sum())
+        pct = (counts / total * 100).round(3) if total else counts.astype(float)
+        base.update({
+            "schema_detected": stats["schema_detected"],
+            "iSCLCN": total,
+            "total_kernels_raw_file": stats["total_raw"],
+            "kernels_removed_file": stats["kernels_removed"],
+            "IPSDP": float(pct["IPSDP"]),
+            "IPSSP": float(pct["IPSSP"]),
+            "IPLSP": float(pct["IPLSP"]),
+            "IPLDP": float(pct["IPLDP"]),
+            "Processing_Status": "success",
+            "Error_Message": "",
+        })
+    except Exception as exc:
+        base["Error_Message"] = str(exc)
+    return base
 
 
 def find_files(folder: str | Path, recursive: bool = False) -> list[Path]:
     folder = Path(folder)
     iterator = folder.rglob("*") if recursive else folder.glob("*")
-    skip = ["_spr_traits", "_kernel_predictions", "_processing_stats", "batch_processing_log"]
+    skip = ["_spr_traits", "_kernel_predictions", "_processing_stats", "batch_processing", "vmek_spr_traits_output"]
     return sorted([p for p in iterator if p.is_file() and p.suffix.lower() in SUPPORTED_SUFFIXES and not any(s in p.stem for s in skip)])
 
 
-def predict_folder(input_folder: str | Path, site_apl: str, model_path: str | Path, output_dir: str | Path, registry_path: str | Path = LOCAL_REGISTRY_FILE, detail: bool = False, recursive: bool = False, combined_name: str = "batch_spr_traits.csv", stop_on_error: bool = False, legacy_filter: bool = True) -> Dict[str, Path]:
+def predict_folder_single_output(input_folder: str | Path, site_apl: str, model_path: str | Path, output_dir: str | Path, output_name: str, registry_path: str | Path = LOCAL_REGISTRY_FILE, recursive: bool = False, stop_on_error: bool = False, legacy_filter: bool = True) -> Path:
     registry = load_registry(registry_path)
     files = find_files(input_folder, recursive)
     if not files:
         raise VmekError(f"No supported files found in folder: {input_folder}")
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    summaries = []
-    logs = []
+    if not output_name.lower().endswith(".csv"):
+        output_name += ".csv"
+    model, metadata = load_model(model_path)
+    rows = []
     for f in files:
-        try:
-            paths = predict_file(f, site_apl, model_path, output_dir, registry, detail, legacy_filter)
-            summ = pd.read_csv(paths["summary"])
-            summ.insert(0, "input_file", f.name)
-            summaries.append(summ)
-            stats = json.loads(paths["stats"].read_text(encoding="utf-8"))
-            logs.append({"input_file": f.name, "status": "success", **stats, "error": ""})
-        except Exception as exc:
-            logs.append({"input_file": f.name, "status": "failed", "site_apl": site_apl, "error": str(exc)})
-            if stop_on_error:
-                break
-    log_path = output_dir / "batch_processing_log.csv"
-    pd.DataFrame(logs).to_csv(log_path, index=False)
-    if not summaries:
-        raise VmekError(f"No files processed successfully. See log: {log_path}")
-    combined_path = output_dir / combined_name
-    pd.concat(summaries, ignore_index=True, sort=False).to_csv(combined_path, index=False)
-    return {"combined_summary": combined_path, "log": log_path}
+        row = summarize_one_file(f, site_apl, model, metadata, registry, legacy_filter)
+        rows.append(row)
+        if row["Processing_Status"] == "failed" and stop_on_error:
+            break
+    outdir = Path(output_dir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    outpath = outdir / output_name
+    cols = ["SampleName", "Barcode", "InputFile", "Site_APL", "Machine_Name", "schema_detected", "iSCLCN", "total_kernels_raw_file", "kernels_removed_file", "IPSDP", "IPSSP", "IPLSP", "IPLDP", "Processing_Status", "Error_Message"]
+    pd.DataFrame(rows)[cols].to_csv(outpath, index=False)
+    return outpath
 
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("SPR VMEK KNN Processor")
-        self.geometry("980x680")
+        self.geometry("980x640")
         self.registry_path = tk.StringVar(value=LOCAL_REGISTRY_FILE)
         here = Path(__file__).resolve().parent
         self.model_path = tk.StringVar(value=str(here / DEFAULT_MODEL_NAME))
         self.input_folder = tk.StringVar(value="")
         self.output_folder = tk.StringVar(value=str(here / "vmek_outputs"))
         self.site_apl = tk.StringVar(value="")
-        self.detail = tk.BooleanVar(value=False)
         self.recursive = tk.BooleanVar(value=False)
         self.stop_on_error = tk.BooleanVar(value=False)
         self.no_filter = tk.BooleanVar(value=False)
-        self.combined_name = tk.StringVar(value="batch_spr_traits.csv")
+        self.output_name = tk.StringVar(value=DEFAULT_OUTPUT_NAME)
         self.q = queue.Queue()
         self.worker = None
         self._ui()
@@ -326,6 +324,7 @@ class App(tk.Tk):
         root.columnconfigure(0, weight=1)
         root.rowconfigure(4, weight=1)
         ttk.Label(root, text="SPR VMEK KNN Processor", font=("Segoe UI", 16, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(root, text="Folder batch input → one data-system CSV output", foreground="#444").grid(row=0, column=0, sticky="e")
 
         mf = ttk.LabelFrame(root, text="1. Machine", padding=10)
         mf.grid(row=1, column=0, sticky="ew", pady=6)
@@ -345,15 +344,14 @@ class App(tk.Tk):
         self.path_row(io, 0, "Raw data folder", self.input_folder, lambda: self.pick_dir(self.input_folder))
         self.path_row(io, 1, "Output folder", self.output_folder, lambda: self.pick_dir(self.output_folder))
         self.path_row(io, 2, "Model .joblib", self.model_path, self.pick_model)
-        ttk.Label(io, text="Combined output name").grid(row=3, column=0, sticky="w")
-        ttk.Entry(io, textvariable=self.combined_name).grid(row=3, column=1, sticky="ew", pady=4)
+        ttk.Label(io, text="Single output CSV name").grid(row=3, column=0, sticky="w")
+        ttk.Entry(io, textvariable=self.output_name).grid(row=3, column=1, sticky="ew", padx=8, pady=4)
 
         opt = ttk.LabelFrame(root, text="3. Options", padding=10)
         opt.grid(row=3, column=0, sticky="ew", pady=6)
-        ttk.Checkbutton(opt, text="Write kernel-level detail", variable=self.detail).grid(row=0, column=0, sticky="w", padx=5)
-        ttk.Checkbutton(opt, text="Search subfolders", variable=self.recursive).grid(row=0, column=1, sticky="w", padx=5)
-        ttk.Checkbutton(opt, text="Stop on first error", variable=self.stop_on_error).grid(row=0, column=2, sticky="w", padx=5)
-        ttk.Checkbutton(opt, text="Disable legacy 100–1000 px filter", variable=self.no_filter).grid(row=0, column=3, sticky="w", padx=5)
+        ttk.Checkbutton(opt, text="Search subfolders", variable=self.recursive).grid(row=0, column=0, sticky="w", padx=5)
+        ttk.Checkbutton(opt, text="Stop on first error", variable=self.stop_on_error).grid(row=0, column=1, sticky="w", padx=5)
+        ttk.Checkbutton(opt, text="Disable legacy 100–1000 px filter", variable=self.no_filter).grid(row=0, column=2, sticky="w", padx=5)
 
         run = ttk.LabelFrame(root, text="4. Run", padding=10)
         run.grid(row=4, column=0, sticky="nsew", pady=6)
@@ -367,12 +365,13 @@ class App(tk.Tk):
         ttk.Button(bar, text="Clear log", command=lambda: self.log.delete("1.0", "end")).pack(side="left")
         self.progress = ttk.Progressbar(bar, mode="indeterminate", length=220)
         self.progress.pack(side="right")
-        self.log = tk.Text(run, height=18, wrap="word")
+        self.log = tk.Text(run, height=16, wrap="word")
         self.log.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
         scroll = ttk.Scrollbar(run, command=self.log.yview)
         scroll.grid(row=1, column=1, sticky="ns", pady=(8, 0))
         self.log.configure(yscrollcommand=scroll.set)
         self.write("Ready. Select folder, machine, model, then Process folder.")
+        self.write("Output is one CSV only. Barcode is extracted from file names like Sample_DR287636625...")
 
     def path_row(self, parent, row, label, var, cmd):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w")
@@ -432,14 +431,24 @@ class App(tk.Tk):
         self.run_btn.configure(state="disabled")
         self.progress.start(10)
         self.write("\nStarting batch...")
-        args = dict(input_folder=self.input_folder.get(), site_apl=self.site_apl.get(), model_path=self.model_path.get(), output_dir=self.output_folder.get(), registry_path=self.registry_path.get(), detail=self.detail.get(), recursive=self.recursive.get(), combined_name=self.combined_name.get(), stop_on_error=self.stop_on_error.get(), legacy_filter=not self.no_filter.get())
+        args = dict(
+            input_folder=self.input_folder.get(),
+            site_apl=self.site_apl.get(),
+            model_path=self.model_path.get(),
+            output_dir=self.output_folder.get(),
+            output_name=self.output_name.get().strip() or DEFAULT_OUTPUT_NAME,
+            registry_path=self.registry_path.get(),
+            recursive=self.recursive.get(),
+            stop_on_error=self.stop_on_error.get(),
+            legacy_filter=not self.no_filter.get(),
+        )
         self.worker = threading.Thread(target=self.run_worker, args=(args,), daemon=True)
         self.worker.start()
 
     def run_worker(self, args):
         try:
-            paths = predict_folder(**args)
-            self.q.put(("ok", paths))
+            outpath = predict_folder_single_output(**args)
+            self.q.put(("ok", outpath))
         except Exception as exc:
             self.q.put(("err", (str(exc), traceback.format_exc())))
 
@@ -451,9 +460,8 @@ class App(tk.Tk):
                 self.run_btn.configure(state="normal")
                 if status == "ok":
                     self.write("Batch complete.")
-                    for k, v in payload.items():
-                        self.write(f"{k}: {v}")
-                    messagebox.showinfo("Complete", "Batch processing complete.")
+                    self.write(f"Output CSV: {payload}")
+                    messagebox.showinfo("Complete", f"Batch processing complete.\n\nOutput:\n{payload}")
                 else:
                     msg, tb = payload
                     self.write("ERROR: " + msg)
